@@ -106,6 +106,7 @@ set(HYPRE_WITH_EXTRA_CFLAGS       "" CACHE STRING "Define extra C compile flags"
 set(HYPRE_WITH_EXTRA_CXXFLAGS     "" CACHE STRING "Define extra CXX compile flags")
 # GPU options
 option(HYPRE_WITH_CUDA               "Use CUDA. Require cuda-8.0 or higher" OFF)
+option(HYPRE_WITH_HIP                "Use HIP" OFF)
 option(HYPRE_WITH_SYCL               "Use SYCL" OFF)
 option(HYPRE_ENABLE_UNIFIED_MEMORY   "Use unified memory for allocating the memory" OFF)
 option(HYPRE_ENABLE_DEVICE_MALLOC_ASYNC "Use device async malloc" OFF)
@@ -340,6 +341,65 @@ if (HYPRE_WITH_CUDA)
   endif (CMAKE_CUDA_COMPILER)
 endif (HYPRE_WITH_CUDA)
 
+# HIP
+# HIP
+if(HYPRE_WITH_HIP)
+  enable_language(CXX)
+  message(STATUS "Enabled support for CXX.")
+
+  #set(GPU_TARGETS "gfx906;gfx908" CACHE STRING "The GPU TARGETs")
+  if (NOT DEFINED ROCM_PATH)
+    if (NOT DEFINED ENV{ROCM_PATH})
+      set(ROCM_PATH "/opt/rocm" CACHE PATH "ROCm path")
+    else()
+      set(ROCM_PATH $ENV{ROCM_PATH} CACHE PATH "ROCm path")
+    endif()
+  endif()
+  #set(CMAKE_MODULE_PATH "${ROCM_PATH}/lib/cmake" ${CMAKE_MODULE_PATH})
+  #list(APPEND CMAKE_PREFIX_PATH /opt/rocm/hip /opt/rocm)
+
+  ## Enforce C++14
+  if (NOT CMAKE_CXX_STANDARD OR CMAKE_CXX_STANDARD LESS 14)
+    set(CMAKE_CXX_STANDARD 14)
+  endif ()
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+  message(STATUS "Using CXX standard: c++${CMAKE_CXX_STANDARD}")
+
+  # Set CXX compiler to hipcc
+  set(CMAKE_CXX_COMPILER "hipcc")
+
+  # Add any extra CXX compiler flags HYPRE_WITH_EXTRA_CXXFLAGS
+  if (NOT HYPRE_WITH_EXTRA_CXXFLAGS STREQUAL "")
+    string(REPLACE " " ";" HYPRE_WITH_EXTRA_CXXFLAGS "${HYPRE_WITH_EXTRA_CXXFLAGS}")
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${HYPRE_WITH_EXTRA_CXXFLAGS}>")
+  endif ()
+
+  set(HYPRE_USING_HIP ON CACHE BOOL "" FORCE)
+  set(HYPRE_USING_ROCRAND ON CACHE BOOL "" FORCE)
+  set(HYPRE_USING_ROCSPARSE ON CACHE BOOL "" FORCE)
+  set(HYPRE_USING_GPU ON CACHE BOOL "" FORCE)
+
+  if (HYPRE_ENABLE_UNIFIED_MEMORY)
+    set(HYPRE_USING_UNIFIED_MEMORY ON CACHE BOOL "" FORCE)
+  else ()
+    set(HYPRE_USING_DEVICE_MEMORY ON CACHE BOOL "" FORCE)
+  endif ()
+
+  # Check if examples are enabled, but not unified memory
+  if (HYPRE_BUILD_EXAMPLES AND NOT HYPRE_ENABLE_UNIFIED_MEMORY)
+    message(WARNING "Running the examples on GPUs requires Unified Memory!
+      Examples will not be built!")
+    set(HYPRE_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  endif ()
+
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-O2>")
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Wall>")
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-I$ENV{MPICH_DIR}/include>")
+
+  set(HYPRE_USING_HOST_MEMORY OFF CACHE BOOL "" FORCE)
+endif(HYPRE_WITH_HIP)
+
 # SYCL
 if (HYPRE_WITH_SYCL)
   enable_language(CXX)
@@ -433,6 +493,13 @@ set(HYPRE_MAIN_HEADERS
   )
 
 set(HYPRE_HEADERS ${HYPRE_HEADERS} ${HYPRE_MAIN_HEADERS})
+
+if (HYPRE_USING_HIP)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE HYPRE_USING_HIP
+    HYPRE_USING_GPU HYPRE_USING_ROCRAND HYPRE_USING_ROCSPARSE)
+  target_include_directories(${PROJECT_NAME} PRIVATE "${ROCM_PATH}/include/"
+  "${ROCM_PATH}/rocprim/include/")
+endif(HYPRE_USING_HIP)
 
 # Headers and sources: blas
 if (HYPRE_USING_HYPRE_BLAS)
@@ -545,6 +612,11 @@ if (HYPRE_USING_CUDA)
   endif ()
 endif ()
 
+if (HYPRE_USING_HIP)
+  set_source_files_properties(${HYPRE_GPU_SOURCES} PROPERTIES LANGUAGE CXX)
+  set_source_files_properties(${HYPRE_GPU_SOURCES} PROPERTIES COMPILE_FLAGS "-x hip")
+endif ()
+
 if (HYPRE_USING_SYCL)
   target_include_directories(${PROJECT_NAME} PUBLIC $ENV{DPLROOT}/include)
   if (HYPRE_ENABLE_ONEMKLSPARSE)
@@ -637,6 +709,12 @@ if (NOT HYPRE_SEQUENTIAL)
   find_package(MPI REQUIRED)
   target_link_libraries(${PROJECT_NAME} PUBLIC MPI::MPI_C)
 endif (NOT HYPRE_SEQUENTIAL)
+
+if (HYPRE_USING_HIP)
+  if (HYPRE_HAVE_MPI)
+    target_include_directories(${PROJECT_NAME} PUBLIC "$ENV{MPICH_DIR}/include")
+  endif ()
+endif()
 
 # Set OpenMP compile flags
 if (HYPRE_USING_OPENMP)
